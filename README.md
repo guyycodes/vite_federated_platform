@@ -1,0 +1,1 @@
+# vite_federated_platform
