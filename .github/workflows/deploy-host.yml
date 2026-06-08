@@ -1,0 +1,98 @@
+name: deploy-host
+
+# Build the host shell and publish it to the static $web (root) behind Front Door,
+# then purge the edge. The MODULE repo separately publishes the remote to
+# $web/modules/sourcing/. Auth is GitHub OIDC → Azure (no stored cloud secrets).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # required for azure/login OIDC
+
+concurrency:
+  group: deploy-host-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod
+    defaults:
+      run:
+        working-directory: vite_federated_platform
+    steps:
+      - name: Checkout host (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: vite_federated_platform
+
+      - name: Checkout module repo (for the @edn/contracts file: link)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/api_event_driven_system
+          path: api_event_driven_system
+          token: ${{ secrets.MODULE_REPO_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: vite_federated_platform/package-lock.json
+
+      - run: npm ci
+
+      - name: Build host
+        run: npm run build
+        env:
+          # Public, build-time values (repo/environment variables, not secrets).
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY }}
+          # Same-origin in prod: point at the Front Door domain so /api/* is same-site.
+          VITE_ADAPTER_URL: ${{ vars.VITE_ADAPTER_URL }}
+          VITE_REMOTES_MANIFEST_URL: ${{ vars.VITE_REMOTES_MANIFEST_URL || '/remotes.json' }}
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Upload host shell to $web
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az storage blob upload-batch \
+              --account-name "${{ vars.AZURE_STORAGE_ACCOUNT }}" \
+              --auth-mode login \
+              --destination '$web' \
+              --source vite_federated_platform/apps/host/dist \
+              --overwrite true
+
+      - name: Publish prod remote manifest (same-origin entry)
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            cat > /tmp/remotes.json <<'JSON'
+            { "remotes": [ { "name": "sourcing", "entry": "/modules/sourcing/remoteEntry.js", "exposedModule": "./SourcingModule" } ] }
+            JSON
+            az storage blob upload \
+              --account-name "${{ vars.AZURE_STORAGE_ACCOUNT }}" \
+              --auth-mode login \
+              --container-name '$web' \
+              --file /tmp/remotes.json \
+              --name remotes.json \
+              --overwrite true
+
+      - name: Purge Front Door (host paths only)
+        uses: azure/cli@v2
+        with:
+          inlineScript: |
+            az afd endpoint purge \
+              --resource-group "${{ vars.AZURE_RESOURCE_GROUP }}" \
+              --profile-name "${{ vars.AFD_PROFILE_NAME }}" \
+              --endpoint-name "${{ vars.AFD_ENDPOINT_NAME }}" \
+              --content-paths '/' '/index.html' '/assets/*' '/remotes.json'

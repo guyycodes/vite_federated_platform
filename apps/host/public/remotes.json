@@ -1,0 +1,9 @@
+{
+  "remotes": [
+    {
+      "name": "sourcing",
+      "entry": "http://localhost:5173/remoteEntry.js",
+      "exposedModule": "./SourcingModule"
+    }
+  ]
+}

@@ -141,3 +141,15 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 .vite/
+
+# --- Terraform ---
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+# real var/backend files (commit only the *.example)
+infra/terraform/*.tfvars
+infra/terraform/backend.*.hcl
+!infra/terraform/*.tfvars.example
+!infra/terraform/backend.*.hcl.example

@@ -1,0 +1,61 @@
+name: infra
+
+# Terraform for the platform foundation (infra/terraform). PR → fmt/validate/plan;
+# push to main → apply (environment-gated). OIDC to Azure; remote state in Azure
+# Storage configured via -backend-config flags from repo variables.
+
+on:
+  pull_request:
+    paths: ["infra/terraform/**", ".github/workflows/infra.yml"]
+  push:
+    branches: [main]
+    paths: ["infra/terraform/**", ".github/workflows/infra.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+  pull-requests: write
+
+jobs:
+  terraform:
+    runs-on: ubuntu-latest
+    environment: ${{ github.ref == 'refs/heads/main' && 'prod' || 'dev' }}
+    defaults:
+      run:
+        working-directory: infra/terraform
+    env:
+      # azurerm reads these for OIDC auth (no client secret).
+      ARM_USE_OIDC: "true"
+      ARM_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      ARM_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      TF_VAR_environment: ${{ vars.TF_ENV || 'dev' }}
+      TF_VAR_adapter_origin_host: ${{ vars.ADAPTER_ORIGIN_HOST }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~> 1.9"
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init (azurerm remote state)
+        run: |
+          terraform init \
+            -backend-config="resource_group_name=${{ vars.TFSTATE_RG }}" \
+            -backend-config="storage_account_name=${{ vars.TFSTATE_SA }}" \
+            -backend-config="container_name=${{ vars.TFSTATE_CONTAINER }}" \
+            -backend-config="key=platform/${{ vars.TF_ENV || 'dev' }}.tfstate"
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        run: terraform plan -no-color -input=false
+
+      - name: Apply
+        if: github.ref == 'refs/heads/main'
+        run: terraform apply -auto-approve -input=false

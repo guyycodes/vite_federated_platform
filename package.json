@@ -1,0 +1,29 @@
+{
+  "name": "vite-federated-platform",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Platform shell (host): a standalone Vite Module Federation host that dynamically loads the SOURCING remote, owns the Clerk session, and keeps a role-driven shared context.",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "dev": "npm run dev --workspace apps/host",
+    "build": "npm run build --workspace apps/host",
+    "preview": "npm run preview --workspace apps/host",
+    "typecheck": "npm run typecheck --workspace apps/host",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "test": "npm run test --workspace apps/host",
+    "verify": "npm run typecheck && npm run lint && npm run test"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.4",
+    "eslint": "^9.39.4",
+    "eslint-config-prettier": "^9.1.2",
+    "globals": "^15.15.0",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.60.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

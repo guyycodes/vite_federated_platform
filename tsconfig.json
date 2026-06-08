@@ -1,0 +1,5 @@
+{
+  "comment": "Root TS config exists for editor tooling. Typechecking runs per-workspace (apps/host has its own tsconfig + `npm run typecheck`).",
+  "files": [],
+  "include": []
+}

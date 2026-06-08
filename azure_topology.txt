@@ -1,0 +1,279 @@
+================================================================================
+ PLATFORM TOPOLOGY — Vite Module Federation platform on Azure
+ Canonical reference for BOTH repos:
+   • vite_federated_platform   (this repo)  — the HOST shell + the foundation
+   • api_event_driven_system   (module repo) — the SOURCING remote + its workloads
+ This document is the contract between the two CI/CD pipelines. §10 is the
+ ownership split; the module-repo LLM builds its pipeline against §10–§11.
+================================================================================
+
+LEGEND  ──► HTTPS/REST   ~~► SSE   ══► Service Bus   ┄┄► SQL   ··► internal call
+        (P) public surface   (I) internal-only   [PE] Private Endpoint   [MI] Managed Identity
+        ⟦P⟧ provisioned by PLATFORM repo (this)   ⟦M⟧ provisioned by MODULE repo
+
+
+────────────────────────────────────────────────────────────────────────────────
+§0  APPLICATION / ROLE TOPOLOGY  (logical view — from stuff/system.png)
+    The "what the user sees" model. §A below is the Azure deployment that runs it.
+
+   ┌──────────────────────── PLATFORM (host shell SPA) ─────────────────────────┐
+   │  Website ──► Auth (Clerk) ──► is_admin?   (RoleShell reads capabilities)    │
+   │                                  │                                          │
+   │            Yes: super_admin / VP │ No: gba / omni-user                      │
+   │                   ▼              ▼                                          │
+   │         ┌──────────────┐  ┌─────────────────────── GBAs ──────────────────┐│
+   │         │  ADMIN        │  │ Vite shell (⊙) + Clerk session                ││
+   │         │  Dashboard    │  │  ╞═module═╡ ╞═module═╡ ╞═sourcing═╡ ╞═ … ═╡      ││ ← MF remotes
+   │         │ (cross-tenant │  │  registerRemotes ─► loadRemote(each remoteEntry)││   (registry)
+   │         │  reads)       │  └───────────────┬─────────────────────────────────┘│
+   │         └──────┬────────┘                  │ modules call /api/* (Bearer JWT)  │
+   └─────────────────┼───────────────────────────┼─────────────────────────────────┘
+                     │ unscoped /query (RBAC)     │
+                     ▼                            ▼
+              ADAPTERS ───────────► BROKER ════► Service Bus ════► VENDORS
+              (REST + SSE)          (orchestrator)              (vendor-sim / real)
+                                       ┄┄► Postgres (durable, tenant-stamped)
+
+   system.png → this doc:  Website/Vite/Admin/GBAs = $web SPA (host shell, §2) ·
+     Auth = Clerk (§7) · module bars = $web/modules/* (§2) · Adapters/Broker = ACA (§3) ·
+     Service Bus (§4) · Vendors = vendor-sim ACA / real APIs · Admin store = Postgres (§5)
+   system.png → code:  is_admin? = RoleShell capabilities (dashboard|modules) ·
+     Admin = Dashboard.tsx · GBAs + bars = RemoteSourcing.tsx + remoteRegistryService.ts
+
+
+────────────────────────────────────────────────────────────────────────────────
+§A  PHYSICAL / AZURE DEPLOYMENT  (the infrastructure that runs §0)
+
+   WEB / browsers                                      ☁ CLERK  (external SaaS, ⟦shared⟧)
+        │                                               ▲ login (browser, redirect)
+        │ HTTPS  (+ Bearer Clerk JWT on /api/*,         │        ▲ JWKS verify
+        │         ?access_token=<JWT> on SSE)           │        │ (ACA egress, outbound)
+        ▼                                               │        │
+╔════════════════════ AZURE FRONT DOOR — Standard/Premium ⟦P⟧ ═══╪════════╪═════════════╗
+║  TLS · WAF · CDN · HTTP/2 · the ONLY public surface (custom domain)     │             ║
+║                                                                                       ║
+║  ROUTE                              ORIGIN GROUP        NOTES                          ║
+║  /                       (SPA)  ──► og-web  ► $web      host shell index.html          ║
+║  /assets/*              (SPA)   ──► og-web  ► $web      host immutable chunks (cache)  ║
+║  /modules/sourcing/*      (MF)    ──► og-web  ► $web      remoteEntry.js + chunks        ║
+║  /remotes.json          (reg)   ──► og-web  ► $web      runtime remote manifest        ║
+║  /api/*                 (REST)  ──► og-api  ► adapter   strip nothing; fwd Bearer      ║
+║  /api/**/stream         (SSE)   ~~► og-api  ► adapter   timeout≥240s, NO buffering,    ║
+║                                                         response compression OFF       ║
+║  origin lock: adapter accepts ONLY traffic carrying this profile's X-Azure-FDID        ║
+╚═══════════════╪═══════════════════════════════════════════════════════╪═══════════════╝
+        (static)▼                                                (api+sse)▼
+ ┌──────────────────────────────────┐   ┌────────────────────────────────────────────────────┐
+ │ STORAGE ACCOUNT — static $web ⟦P⟧ │   │ VNet  10.0.0.0/16  ⟦P⟧                              │
+ │  Standard_LRS · static website ON │  │ ┌── snet-aca-infra 10.0.0.0/23 (delegated) ───────┐ │
+ │  $web/                            │  │ │ ACA Managed Environment  ⟦P⟧ (scale-to-zero)    │ │
+ │    index.html, assets/*  ⟦P⟧ host │   │ │   workload profile: Consumption · LA-backed     │ │
+ │    remotes.json          ⟦P⟧ host │   │ │ ┌──────────────────────────────────────────────┐│ │
+ │    modules/sourcing/                │   │ │ │ adapter     (P*) ext ingress :8080  ⟦M⟧ image ││ │
+ │      remoteEntry.js+chunks ⟦M⟧    │   │ │ │   ··► internal DNS                            ││ │
+ │  SAME-ORIGIN: host + remote served│   │ │ │ broker      (I)  int ingress :8081  ⟦M⟧ image ││ │
+ │  under one AFD domain ⇒ NO CORS   │   │ │ │ vendor-sim  (I)  int ingress :8082  ⟦M⟧ image ││ │
+ │  for remoteEntry/JSON; only the   │   │ │ │              (prod ⇒ real vendor APIs egress) ││ │
+ │  adapter origin needs CORS_ORIGINS│   │ │ └──────┬───────────────┬───────────────┬────────┘│ │
+ └──────────────────────────────────┘   │ │   [MI] egress        [PE]            [PE]         │ │
+                                         │ └────────║───────────────▼ ┄┄►───────────▼──────────┘ │
+ ┌──────────────────────────────────┐   │ ┌── snet-pe 10.0.2.0/24 (private endpoints) ───────┐ │
+ │ ACR — container registry ⟦P⟧      │   │ │   ┌──────────┐   ┌───────────┐                   │ │
+ │  Basic/Standard · admin OFF       │   │ │   │ POSTGRES │   │ BLOB priv │  (large payloads, │ │
+ │  module pushes edn-app:<sha>      │   │ │   │ Flexible │   │ artifacts │   refs in frames)  │ │
+ │  ACA pulls via [MI] AcrPull       │   │ │   │ ⟦M⟧ VNet │   │ ⟦M⟧ [PE]  │                   │ │
+ └──────────────────────────────────┘   │ │   │ schema-  │   └───────────┘                   │ │
+                                         │ │   │ per-dept │                                    │ │
+ ┌──────────────────────────────────┐   │ │   └──────────┘                                    │ │
+ │ KEY VAULT ⟦P⟧                     │   │ └──────────────────────────────────────────────────┘ │
+ │  CLERK_* , conn strings, secrets  │   └────────────────────────────────────────────────────────┘
+ │  read by ACA via [MI] (KV refs)   │
+ └──────────────────────────────────┘   ┌──────────────────────────────────┐
+                                         │ SERVICE BUS — Standard ⟦M⟧        │
+ ┌──────────────────────────────────┐   │  public endpoint + [MI] data-owner│
+ │ LOG ANALYTICS + App Insights ⟦P⟧  │   │  topic <dept>-vendor-requests     │
+ │  ACA + AFD + (opt) all diagnostics│   │  sub  per async vendor (SQL filter)│
+ └──────────────────────────────────┘   │  queue <dept>-vendor-responses    │
+                                         │  queue <dept>-persist             │
+ P* adapter ingress is "external" but    │  (infra/servicebus/*.tf, existing)│
+    LOCKED to Front Door via X-Azure-FDID└──────────────────────────────────┘
+    (so AFD stays the only real entrypoint).
+
+
+REQUEST / DATA FLOW
+  1. Browser ─► AFD ─► $web : loads host shell (SPA).  Shell mounts ClerkProvider.
+  2. Login ─► Clerk (hosted) ─► session JWT (carries account_type/role/country/org_*).
+  3. Shell resolves role from publicMetadata → RoleShell:
+       • super_admin / VP → Dashboard (no remote pulled)
+       • gba / omni-user  → fetch /remotes.json ─► registerRemotes ─► loadRemote
+                            ─► AFD ─► $web /modules/sourcing/remoteEntry.js  (same-origin)
+  4. Module/host call ─► AFD /api/* (Bearer JWT) ─► adapter (verify JWT vs Clerk JWKS)
+       ··► broker (re-verify, derive tenant via RBAC) ══► Service Bus topic
+  5. vendor-sim consumes its subscription ══► replies on responses queue ─► broker
+       callback ─► persist queue ─► idempotent SQL sink ┄┄► Postgres (tenant-stamped).
+  6. Live frames: broker ring buffer ~~► adapter SSE proxy ~~► AFD ~~► browser
+       EventSource (auth via ?access_token). Host shared context ALSO reads the
+       remote's exposed MobX ring buffer (shared singleton) — see SHARED_CONTEXT.md.
+  7. Resync/reload: GET /api/v1/query?correlationId (Bearer) rebuilds the timeline,
+       then SSE tails. Dedup by stable eventId (never seq).
+
+
+────────────────────────────────────────────────────────────────────────────────
+§1  PUBLIC SURFACE — Azure Front Door (Standard, upgrade to Premium for Private
+    Link origins / managed WAF rules).  ⟦P⟧
+    • One profile, one endpoint, one custom domain (e.g. app.example.com).
+    • WAF policy in Prevention mode (Microsoft default rule set).
+    • Two origin groups:
+        og-web : origin = the Storage static-website host (…z##.web.core.windows.net),
+                 origin host header = that hostname, HTTPS only, health probe GET /.
+        og-api : origin = the adapter ACA FQDN (…<region>.azurecontainerapps.io),
+                 health probe GET /healthz (adapter exposes it), HTTPS only.
+    • Routes as in the diagram. The SSE route needs: originResponseTimeoutSeconds ≥ 240,
+      and compression DISABLED on /api/** so the event stream isn't buffered.
+    • Origin lock: a Front Door rule + the adapter validating X-Azure-FDID == this
+      profile's id (defense-in-depth so the ACA public FQDN can't be hit directly).
+
+§2  STATIC HOSTING — Storage account static website ($web).  ⟦P⟧
+    • host shell deploys to  $web/            (index.html, assets/*, remotes.json)
+    • remote   deploys to    $web/modules/sourcing/  (remoteEntry.js + chunks)
+    • Same AFD domain for both ⇒ the browser never makes a cross-origin request for
+      remoteEntry.js or remotes.json ⇒ no CORS for static. Only /api/* (the adapter)
+      is a distinct concern; since it's same AFD host too, CORS_ORIGINS just needs the
+      AFD custom domain. (Direct-to-ACA dev still needs CORS_ORIGINS=localhost:5174.)
+    • remotes.json (prod) points at the SAME origin:
+        { "remotes":[{ "name":"sourcing",
+                       "entry":"/modules/sourcing/remoteEntry.js",
+                       "exposedModule":"./SourcingModule" }] }
+      (relative entry ⇒ AFD host-relative; works in dev with the absolute :5173 URL.)
+
+§3  COMPUTE — Azure Container Apps.  env ⟦P⟧, apps ⟦M⟧
+    • One Managed Environment (Consumption profile, scale-to-zero), VNet-injected into
+      snet-aca-infra, wired to Log Analytics.
+    • Three apps from ONE image (edn-app:<git-sha>), differing only by start command:
+        adapter    : external ingress, target :8080, minReplicas 0, FDID-locked
+        broker     : internal ingress, target :8081, minReplicas 1 (owns the ring buffer
+                     + the single outbox relay; do not scale to zero if SSE must be warm)
+        vendor-sim : internal ingress, target :8082 (prod ⇒ replace with real vendor egress)
+    • App config (env) comes from Key Vault refs + the platform outputs (SB FQNS,
+      Postgres FQDN, ACR). Each app uses the workload [MI] for ACR pull, SB, KV, PG.
+
+§4  MESSAGING — Service Bus Standard.  ⟦M⟧ (already coded: api repo infra/servicebus/*)
+    • Standard SKU (per-op billing, topics+subs). Auth via [MI] (SERVICEBUS_FQNS),
+      SAS only as fallback. Entities are department-parameterized:
+        topic <dept>-vendor-requests + subscription-per-async-vendor (SQL filter on
+        the `vendor` property), queue <dept>-vendor-responses, queue <dept>-persist.
+    • TTL P14D, dead-lettering on, lock PT1M (matches the local emulator Config.json).
+
+§5  DATA — Azure Database for PostgreSQL Flexible Server.  ⟦M⟧
+    • Private via VNet integration: the server is injected into the platform's
+      delegated subnet (postgres_subnet_id, delegated to Microsoft.DBforPostgreSQL/
+      flexibleServers) + a private DNS zone — NOT a classic Private Endpoint (PG
+      Flexible doesn't use PE in azurerm 3.x). Reached only from broker over the VNet.
+    • schema-per-department; tenant_id column stamped from verified claims (F13/RBAC).
+    • Migrations run as an ACA Job (npm run migrate) in the module pipeline, pre-deploy.
+
+§6  NETWORK.  VNet+subnets ⟦P⟧ ; PEs for module backings ⟦M⟧
+    • VNet 10.0.0.0/16.  snet-aca-infra 10.0.0.0/23 (delegated to ACA).
+      snet-pe 10.0.2.0/24 (private Blob endpoints).  snet-pg 10.0.3.0/24 (delegated to
+      PostgreSQL Flexible — VNet integration).
+    • Service Bus uses its public endpoint + [MI] (Standard has no Private Link); lock
+      with IP rules / firewall if required. Storage $web is public-by-design (behind AFD).
+
+§7  IDENTITY, AUTH & SECRETS
+    • Clerk (external) is the IdP. The HOST owns the only ClerkProvider; the remote is
+      Clerk-agnostic (host passes getToken). Session token carries the RBAC claims via
+      "Customize session token" (see SHARED_CONTEXT.md).
+    • Workload identity: one user-assigned [MI] per concern (or one shared) with least
+      privilege: AcrPull (ACR), Azure Service Bus Data Owner (SB), Key Vault Secrets
+      User (KV), and Postgres AAD auth (or KV-stored password).
+    • Deploy identity: GitHub Actions authenticates to Azure via OIDC federated
+      credentials (no stored secrets) — see §11.
+    • Secrets in Key Vault: CLERK_JWKS_URL/ISSUER/AUDIENCE, any vendor API keys,
+      Postgres conn (if password auth). ACA references them as secret refs.
+
+§8  OBSERVABILITY.  ⟦P⟧
+    • Log Analytics workspace + Application Insights. ACA console/system logs, AFD
+      access logs + WAF logs, SB + PG diagnostics → the workspace.
+
+§9  ENVIRONMENTS & NAMING
+    • Environments: dev and prod (separate resource groups + state, same modules).
+    • Convention: <type>-edn-<env>[-<region>] e.g.
+        rg-edn-prod · afd-edn-prod · stedneprodweb (storage, no dashes) · acredneprod
+        cae-edn-prod (ACA env) · kv-edn-prod · log-edn-prod · sbns-broker-diglearn-prod
+        psql-edn-prod · vnet-edn-prod.
+
+────────────────────────────────────────────────────────────────────────────────
+§10 REPO OWNERSHIP SPLIT  — the handoff contract (landlord ⟦P⟧ / tenant ⟦M⟧)
+
+  PLATFORM repo ⟦P⟧ (this) — the shared foundation + the host shell.
+    Terraform (infra/terraform/) provisions, and OUTPUTS for the module to consume:
+      RG, Log Analytics, VNet + subnets, Storage static $web, Front Door + WAF +
+      routes + origin groups, ACR, ACA Managed Environment, Key Vault, deploy + (opt)
+      workload Managed Identity, base role assignments.
+    Outputs (module reads these):
+      resource_group_name, location, vnet_id, aca_infra_subnet_id,
+      private_endpoint_subnet_id, postgres_subnet_id (delegated, for PG Flexible),
+      aca_environment_id, acr_login_server, storage_account_name, web_endpoint,
+      afd_endpoint_hostname, afd_profile_id (X-Azure-FDID), key_vault_uri,
+      log_analytics_workspace_id, workload_identity_{id,client_id,principal_id}.
+    CI/CD: verify + build the host SPA → upload to $web/ → AFD purge / and /assets/*.
+      Separate workflow: terraform plan (PR) / apply (main, env-gated).
+
+  MODULE repo ⟦M⟦ (api_event_driven_system) — its workloads + stateful backings.
+    Terraform (or `az` against platform outputs): the 3 ACA apps (into the platform
+      ACA env, image from platform ACR), Postgres Flexible (VNet-integrated via the
+      platform's delegated postgres_subnet_id + a private DNS zone), Service Bus
+      (existing infra/servicebus, namespace + entities), the apps' [MI] + role
+      assignments (SB/KV/PG/ACR), and the AFD og-api origin host (= adapter FQDN; set
+      after first deploy, or platform var adapter_origin_host).
+    CI/CD (the module LLM builds this): verify (typecheck+lint+test across packages/
+      services/apps) → docker build edn-app:<sha> → push to platform ACR → run DB
+      migration job → update the 3 ACA apps' image → build the REMOTE (vite build
+      apps/web) → upload dist/ to $web/modules/sourcing/ → AFD purge /modules/sourcing/*.
+    Consumes platform outputs via `terraform_remote_state` (azurerm backend) or repo/
+      environment variables wired from §10 outputs.
+
+  Cross-repo dependency is ONE-WAY: module reads platform outputs. The platform must
+  `apply` first (foundation), then the module deploys onto it. The only late-binding
+  edge is AFD og-api → adapter FQDN (set after the first module deploy).
+
+────────────────────────────────────────────────────────────────────────────────
+§11 CI/CD PIPELINES  (GitHub Actions, OIDC to Azure — no stored cloud secrets)
+
+  Auth: each repo registers a Microsoft Entra app + federated credential for its
+  GitHub repo/branch/environment. Workflows request an OIDC token; `azure/login`
+  exchanges it. Repo/Environment vars (NOT secrets): AZURE_CLIENT_ID,
+  AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID. Grant the deploy identity: Storage Blob
+  Data Contributor (+ AFD purge via the resource), and (module) AcrPush + ACA
+  Contributor + the migration job.
+
+  PLATFORM repo workflows (this repo, .github/workflows/):
+    ci.yml        on PR + push: npm ci → npm run verify (typecheck+lint+test) →
+                  npm run build (proves the host bundles). Required check for merge.
+    infra.yml     on PR touching infra/**: terraform fmt -check, init, validate, plan
+                  (comment plan). on push to main: terraform apply (environment-gated).
+    deploy-host.yml  on push to main (after ci): build host →
+                  az storage blob upload-batch -d '$web' (root) →
+                  az afd endpoint purge --content-paths '/index.html' '/assets/*' '/remotes.json'.
+
+  MODULE repo workflows (built by the module LLM, per §10):
+    ci.yml        verify the whole monorepo (unit/component/api; integration optional).
+    deploy.yml    docker build+push edn-app:<sha> → ACR; migrate job; az containerapp
+                  update --image for adapter/broker/vendor-sim; vite build apps/web
+                  (build base/publicPath = /modules/sourcing/ so chunks resolve under that
+                  prefix) → upload dist/ to $web/modules/sourcing/ → AFD purge
+                  /modules/sourcing/*. After first deploy, hand the adapter ACA FQDN back
+                  to the platform var ADAPTER_ORIGIN_HOST (wires AFD /api/* + SSE).
+
+────────────────────────────────────────────────────────────────────────────────
+§12 NOTES / DECISIONS
+  • Same-origin static hosting (host + remote under one AFD domain) is the key
+    simplification: no CORS for federation, versioned independent deploys, instant
+    rollback by re-uploading a prior remoteEntry build.
+  • broker minReplicas ≥ 1: it owns the in-process SSE ring buffer + the single outbox
+    relay; scale-to-zero would drop live SSE subscribers and stall the relay.
+  • Frame contract (@edn/contracts, ENVELOPE_VERSION=1) is the deploy seam: publish it
+    as a versioned package so host and remote build independently (see FEDERATION.md).
+  • Cost lever: AFD Standard + ACA scale-to-zero (adapter/vendor-sim) + SB Standard +
+    PG Flexible Burstable in dev. broker stays warm.
+================================================================================

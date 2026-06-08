@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: vite_federated_platform
+    steps:
+      - name: Checkout host (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: vite_federated_platform
+
+      # The host imports @edn/contracts via a file: link to the sibling MODULE repo
+      # (single-sourced Frame contract). Check it out as a sibling at the SAME layout
+      # as local dev so the link resolves.
+      # PRODUCTION TARGET (azure_topology.txt §12 / apps/host/docs/FEDERATION.md):
+      # publish @edn/contracts to a registry and depend on the version — then this
+      # second checkout disappears. Set secret MODULE_REPO_TOKEN if the repo is private.
+      - name: Checkout module repo (for the @edn/contracts file: link)
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/api_event_driven_system
+          path: api_event_driven_system
+          token: ${{ secrets.MODULE_REPO_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: vite_federated_platform/package-lock.json
+
+      - run: npm ci
+
+      - name: Verify (typecheck + lint + tests)
+        run: npm run verify
+
+      - name: Build (smoke — proves the host bundles)
+        run: npm run build
+        env:
+          VITE_CLERK_PUBLISHABLE_KEY: ${{ vars.VITE_CLERK_PUBLISHABLE_KEY || 'pk_test_ci_placeholder' }}
+          VITE_ADAPTER_URL: ${{ vars.VITE_ADAPTER_URL || 'http://localhost:8080' }}
+          VITE_REMOTES_MANIFEST_URL: ${{ vars.VITE_REMOTES_MANIFEST_URL || '/remotes.json' }}

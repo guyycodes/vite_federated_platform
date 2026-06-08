@@ -1,0 +1,10 @@
+# Remote state backend (Azure Storage). Copy to backend.dev.hcl and run:
+#   terraform init -backend-config=backend.dev.hcl
+# Bootstrap the state RG/account/container once (out-of-band), e.g.:
+#   az group create -n rg-tfstate -l eastus
+#   az storage account create -n sttfstateedn -g rg-tfstate -l eastus --sku Standard_LRS
+#   az storage container create -n tfstate --account-name sttfstateedn
+resource_group_name  = "rg-tfstate"
+storage_account_name = "sttfstateedn"
+container_name       = "tfstate"
+key                  = "platform/dev.tfstate"

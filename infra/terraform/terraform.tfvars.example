@@ -1,0 +1,24 @@
+# Copy to terraform.<env>.tfvars and edit. `environment` drives naming + state.
+project     = "edn"
+environment = "dev"
+location    = "eastus"
+
+# Networking (defaults are fine for a single env).
+vnet_address_space = ["10.0.0.0/16"]
+aca_subnet_prefix  = "10.0.0.0/23"
+pe_subnet_prefix   = "10.0.2.0/24"
+
+acr_sku = "Standard"
+
+# Leave empty on the FIRST apply (web routes only). After the MODULE repo's first
+# deploy, set this to the adapter's ACA FQDN and re-apply to add /api/* + SSE.
+# adapter_origin_host = "adapter.<env-hash>.<region>.azurecontainerapps.io"
+adapter_origin_host = ""
+
+# Optional: object id of the GitHub Actions deploy service principal, to auto-grant
+# Storage Blob Data Contributor + CDN Profile Contributor (else assign by hand).
+# github_deploy_principal_id = "00000000-0000-0000-0000-000000000000"
+
+tags = {
+  owner = "platform"
+}
