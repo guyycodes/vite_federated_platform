@@ -2,7 +2,7 @@ import { loadRemote, registerRemotes } from "@module-federation/enhanced/runtime
 import type { ComponentType } from "react";
 
 /**
- * remoteRegistryService — the production analog of buster_and_co's webpack-era
+ * remoteRegistryService — the production analog of a
  * dynamic plugin loader (pluginRegistry.js + pluginLoader.js), rebuilt on the
  * Vite Module Federation RUNTIME.
  *
@@ -24,6 +24,7 @@ export interface RemoteManifestEntry {
   exposedModule?: string;
 }
 
+// Replace with the remote entry for the CDN URL in production
 const MANIFEST_URL = (import.meta.env.VITE_REMOTES_MANIFEST_URL as string | undefined) ?? "/remotes.json";
 
 class RemoteRegistryService {

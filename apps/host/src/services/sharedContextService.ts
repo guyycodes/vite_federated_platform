@@ -25,7 +25,6 @@ const FRAME_EVENTS: FrameType[] = [
   "vendor.requested",
   "vendor.responded",
   "vendor.failed",
-  "persist.written",
   "run.completed",
   "run.failed",
   "resync",

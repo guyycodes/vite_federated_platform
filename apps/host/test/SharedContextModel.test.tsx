@@ -59,7 +59,7 @@ describe("ModuleContextModel.appendFrame dedup (F8)", () => {
   it("evicts oldest beyond the ring buffer cap", () => {
     const m = sharedContextModel.module(MOD);
     for (let i = 0; i < 250; i++) {
-      m.appendFrame(CID, frame(i, `${CID}:persist.written:${i}`, "persist.written"));
+      m.appendFrame(CID, frame(i, `${CID}:vendor.responded:${i}`, "vendor.responded"));
     }
     expect(m.activeRuns.get(CID)?.frames.length).toBe(200);
   });

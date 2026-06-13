@@ -94,7 +94,7 @@ LEGEND  ──► HTTPS/REST   ~~► SSE   ══► Service Bus   ┄┄► SQL
  │ LOG ANALYTICS + App Insights ⟦P⟧  │   │  topic <dept>-vendor-requests     │
  │  ACA + AFD + (opt) all diagnostics│   │  sub  per async vendor (SQL filter)│
  └──────────────────────────────────┘   │  queue <dept>-vendor-responses    │
-                                         │  queue <dept>-persist             │
+                                         │  events: inline write to Postgres │
  P* adapter ingress is "external" but    │  (infra/servicebus/*.tf, existing)│
     LOCKED to Front Door via X-Azure-FDID└──────────────────────────────────┘
     (so AFD stays the only real entrypoint).
@@ -110,7 +110,7 @@ REQUEST / DATA FLOW
   4. Module/host call ─► AFD /api/* (Bearer JWT) ─► adapter (verify JWT vs Clerk JWKS)
        ··► broker (re-verify, derive tenant via RBAC) ══► Service Bus topic
   5. vendor-sim consumes its subscription ══► replies on responses queue ─► broker
-       callback ─► persist queue ─► idempotent SQL sink ┄┄► Postgres (tenant-stamped).
+       callback ─► idempotent inline write (same txn) ┄┄► Postgres (tenant-stamped).
   6. Live frames: broker ring buffer ~~► adapter SSE proxy ~~► AFD ~~► browser
        EventSource (auth via ?access_token). Host shared context ALSO reads the
        remote's exposed MobX ring buffer (shared singleton) — see SHARED_CONTEXT.md.
@@ -161,7 +161,8 @@ REQUEST / DATA FLOW
     • Standard SKU (per-op billing, topics+subs). Auth via [MI] (SERVICEBUS_FQNS),
       SAS only as fallback. Entities are department-parameterized:
         topic <dept>-vendor-requests + subscription-per-async-vendor (SQL filter on
-        the `vendor` property), queue <dept>-vendor-responses, queue <dept>-persist.
+        the `vendor` property), queue <dept>-vendor-responses. (No persist queue —
+        the broker writes its durable event timeline inline to Postgres.)
     • TTL P14D, dead-lettering on, lock PT1M (matches the local emulator Config.json).
 
 §5  DATA — Azure Database for PostgreSQL Flexible Server.  ⟦M⟧
