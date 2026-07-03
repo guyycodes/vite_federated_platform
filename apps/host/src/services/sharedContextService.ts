@@ -193,6 +193,20 @@ class SharedContextService {
     return dispose;
   }
 
+  // ------------ platform → remote (the reverse leg, bi-directional) ---------
+  /**
+   * The reverse direction (platform → module) is implemented via REACTIVE PROPS,
+   * not a service-level autorun: `RemoteSourcing` is an `observer` that reads the
+   * shared context and forwards it as the remote's `platformContext` prop, which
+   * the remote sinks into its own MobX model. That keeps the remote
+   * platform-agnostic (no host-type import) and avoids a cross-boundary
+   * read-write autorun pair here.
+   *
+   * If a future module needs platform state OUTSIDE React's render tree, add an
+   * autorun counterpart to `mirrorRemoteModel` here that pushes into a setter the
+   * remote exposes — wrapping the WRITE in `untracked()` to avoid a feedback loop.
+   */
+
   // ------------------------------ teardown ---------------------------------
   closeAll(): void {
     for (const cid of [...this.sources.keys()]) this.close(cid);
